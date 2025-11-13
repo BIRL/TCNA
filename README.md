@@ -78,3 +78,4 @@ npm i
 npm run dev
 ```
 
+The website will now be available at [http://localhost:8081](http://localhost:8081).
