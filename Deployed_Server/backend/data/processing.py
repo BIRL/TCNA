@@ -10,11 +10,8 @@ import os
 FILES_ENDPOINT = "https://api.gdc.cancer.gov/files"
 DATA_ENDPOINT = "https://api.gdc.cancer.gov/data"
 
-# Output directory
-OUTPUT_DIR = os.path.join(os.getcwd(), 'tcga_csvs')
-os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# get files for selected primary_sites (update accordingly for all)
+
 def process_file(file_id, sample_id, file_name, data_endpoint):
     try:
         response = requests.get(f"{data_endpoint}/{file_id}", stream=True, timeout=30)
@@ -97,12 +94,15 @@ def get_rna_seq_metadata(primary_site):
 
     return pd.DataFrame(sample_data)
 
-def generate_expression_csvs(cancer_types):
-    for cancer_type in cancer_types:
-        print(f"\n🔬 Processing {cancer_type}...")
-        sample_df = get_rna_seq_metadata(cancer_type)
+def generate_expression_csvs(cancer_site):
+    for cancer_site in cancer_site:
+        # Output directory
+        OUTPUT_DIR = os.path.join(os.getcwd(), f'tcga_csvs/{cancer_site}')
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        print(f"\n🔬 Processing {cancer_site}...")
+        sample_df = get_rna_seq_metadata(cancer_site)
         if sample_df.empty:
-            print(f"No metadata found for {cancer_type}. Skipping.")
+            print(f"No metadata found for {cancer_site}. Skipping.")
             continue
 
         tumor_sample_df = sample_df[sample_df["sample_type"].str.lower().str.contains("tumor")]
@@ -110,7 +110,7 @@ def generate_expression_csvs(cancer_types):
         print("found: ", len(sample_df))
         for label, group_df in [("tumor", tumor_sample_df), ("normal", normal_sample_df)]:
             if group_df.empty:
-                print(f"No {label} samples found for {cancer_type}")
+                print(f"No {label} samples found for {cancer_site}")
                 continue
 
             print(f"\nDownloading and processing {label} RNA-seq data...")
@@ -136,7 +136,7 @@ def generate_expression_csvs(cancer_types):
                             new_gene_names = gene_names
 
             if not tpm_data:
-                print(f"No valid {label} data for {cancer_type}")
+                print(f"No valid {label} data for {cancer_site}")
                 continue
 
             # Construct matrices
@@ -154,20 +154,21 @@ def generate_expression_csvs(cancer_types):
             fpkm_uq_matrix.insert(0, "gene_id", new_gene_ids)
 
             # Save to files
-            code = cancer_type.replace("TCGA-", "")
-            tpm_path = os.path.join(OUTPUT_DIR, f"TCGA-{code}_{label}_tpm.csv")
-            fpkm_path = os.path.join(OUTPUT_DIR, f"TCGA-{code}_{label}_fpkm.csv")
-            fpkm_uq_path = os.path.join(OUTPUT_DIR, f"TCGA-{code}_{label}_fpkm_uq.csv")
+            # code = cancer_site.replace("TCGA-", "")
+            tpm_path = os.path.join(OUTPUT_DIR, f"{label}_tpm.csv")
+            fpkm_path = os.path.join(OUTPUT_DIR, f"{label}_fpkm.csv")
+            fpkm_uq_path = os.path.join(OUTPUT_DIR, f"{label}_fpkm_uq.csv")
 
             tpm_matrix.to_csv(tpm_path, index=False)
             fpkm_matrix.to_csv(fpkm_path, index=False)
             fpkm_uq_matrix.to_csv(fpkm_uq_path, index=False)
 
 
-            print(f"Saved {label} CSVs for {cancer_type}:\n{tpm_path}\n{fpkm_path}\n{fpkm_uq_path}")
+            print(f"Saved {label} CSVs for {cancer_site}:\n{tpm_path}\n{fpkm_path}\n{fpkm_uq_path}")
 
+# map primary sites with precise naming conventions from GDC
 if __name__ == "__main__":
     import time
     start = time.time()
-    generate_expression_csvs(["Thymus"])  # Add more TCGA types here
+    generate_expression_csvs(["Adrenal Gland", "Bladder", "Bone Marrow and Blood", "Brain", "Breast", "Cervix", "Colorectal", "Esophagus", "Eye", "Head and Neck", "Kidney", "Liver", "Lung", "Lymph Nodes", "Ovary", "Pancreas", "Pleura", "Prostate", "Rectum", "Skin", "Soft Tissue", "Stomach", "Testis", "Thymus", "Thyroid", "Uterus"])  # Add more cancer sites here
     print(f"\nTotal time: {time.time() - start:.2f} seconds")
