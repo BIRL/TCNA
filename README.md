@@ -12,37 +12,6 @@ To run this on your local system, ensure the following is downloaded on your sys
 
 Once the above requirements are fulfilled, you can run the website by following these steps:
 
-### Database Setup:
-```sh
-# Step 1: Log into MariaDB:
-mysql -u root -p
-
-# Step 2: Once inside the MariaDB prompt:
-CREATE DATABASE tcna_cancer_db;
-
-# Step 3: Exit:
-EXIT;
-
-# Step 4: From your terminal (not inside the MariaDB shell), run:
-
-mysql -u root -p tcna_cancer_db < /path/to/cancer_db.sql
-
-# Step 5: Create user
-CREATE USER 'tcna_user'@'localhost' IDENTIFIED BY 'your_password';
-GRANT ALL PRIVILEGES ON tcna_cancer_db.* TO 'tcna_user'@'localhost';
-FLUSH PRIVILEGES;
-
-# Step 6: Log in using the created user:
-mysql -u tcna_user -p tcna_cancer_db < /path/to/tcna_cancer_db.sql
-
-# Step 7: Verify the Import
-mysql -u root -p
-
-#Then check:
-USE tcna_cancer_db;
-SHOW TABLES;
-```
-
 ### Backend Setup:
 ```sh
 # Step 1: Clone the repository using the project's Git URL.
