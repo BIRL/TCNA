@@ -8,7 +8,7 @@ To run this on your local system, ensure the following is downloaded on your sys
 - Node.js and npm (if not use [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating))
 - Python 3.11+
 - MariaDB 12.0.2
-The only requirement is having Node.js & npm installed - 
+
 
 Once the above requirements are fulfilled, you can run the website by following these steps:
 
