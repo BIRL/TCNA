@@ -11,7 +11,6 @@ FILES_ENDPOINT = "https://api.gdc.cancer.gov/files"
 DATA_ENDPOINT = "https://api.gdc.cancer.gov/data"
 
 
-
 def process_file(file_id, sample_id, file_name, data_endpoint):
     try:
         response = requests.get(f"{data_endpoint}/{file_id}", stream=True, timeout=30)
@@ -45,13 +44,12 @@ def process_file(file_id, sample_id, file_name, data_endpoint):
         print(f"Error processing file {file_id}: {e}")
         return None, None, None, None, None
 
+
 def get_rna_seq_metadata(primary_site):
     params = {
         "filters": {
             "op": "and",
             "content": [
-                # {"op": "=", "content": {"field": "cases.project.program.name", "value": "TCGA"}},
-                # {"op": "=", "content": {"field": "cases.project.project_id", "value": project_id}},
                 {"op": "=", "content": {"field": "cases.primary_site", "value": primary_site}},
                 {"op": "=", "content": {"field": "data_category", "value": "Transcriptome Profiling"}},
                 {"op": "=", "content": {"field": "data_type", "value": "Gene Expression Quantification"}},
@@ -94,20 +92,42 @@ def get_rna_seq_metadata(primary_site):
 
     return pd.DataFrame(sample_data)
 
-def generate_expression_csvs(cancer_site):
-    for cancer_site in cancer_site:
-        # Output directory
-        OUTPUT_DIR = os.path.join(os.getcwd(), f'tcga_csvs/{cancer_site}')
+
+def generate_expression_csvs(cancer_sites):
+    """
+    Generate expression CSV files for cancer sites from GDC API.
+    
+    Args:
+        cancer_sites: List of cancer site names (primary sites from GDC)
+    """
+    # Get the script directory and construct path to backend/data/raw
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    base_output_dir = os.path.normpath(os.path.join(script_dir, "..", "data", "raw"))
+    os.makedirs(base_output_dir, exist_ok=True)
+    
+    for cancer_site in cancer_sites:
+        # Output directory - use site name as folder name
+        OUTPUT_DIR = os.path.join(base_output_dir, cancer_site)
         os.makedirs(OUTPUT_DIR, exist_ok=True)
-        print(f"\n🔬 Processing {cancer_site}...")
+        
+        print(f"\nProcessing {cancer_site}...")
         sample_df = get_rna_seq_metadata(cancer_site)
+        
         if sample_df.empty:
             print(f"No metadata found for {cancer_site}. Skipping.")
             continue
 
+        # Save sample sheet (metadata) to CSV
+        sample_sheet_path = os.path.join(OUTPUT_DIR, "sample_sheet.csv")
+        sample_df.to_csv(sample_sheet_path, index=False)
+        print(f"Saved sample sheet: {sample_sheet_path}")
+        print(f"  Total samples found: {len(sample_df)}")
+
         tumor_sample_df = sample_df[sample_df["sample_type"].str.lower().str.contains("tumor")]
         normal_sample_df = sample_df[sample_df["sample_type"].str.lower().str.contains("normal")]
-        print("found: ", len(sample_df))
+        
+        print(f"  Tumor samples: {len(tumor_sample_df)}, Normal samples: {len(normal_sample_df)}")
+        
         for label, group_df in [("tumor", tumor_sample_df), ("normal", normal_sample_df)]:
             if group_df.empty:
                 print(f"No {label} samples found for {cancer_site}")
@@ -154,7 +174,6 @@ def generate_expression_csvs(cancer_site):
             fpkm_uq_matrix.insert(0, "gene_id", new_gene_ids)
 
             # Save to files
-            # code = cancer_site.replace("TCGA-", "")
             tpm_path = os.path.join(OUTPUT_DIR, f"{label}_tpm.csv")
             fpkm_path = os.path.join(OUTPUT_DIR, f"{label}_fpkm.csv")
             fpkm_uq_path = os.path.join(OUTPUT_DIR, f"{label}_fpkm_uq.csv")
@@ -163,12 +182,26 @@ def generate_expression_csvs(cancer_site):
             fpkm_matrix.to_csv(fpkm_path, index=False)
             fpkm_uq_matrix.to_csv(fpkm_uq_path, index=False)
 
+            print(f"Saved {label} CSVs for {cancer_site}:\n  {tpm_path}\n  {fpkm_path}\n  {fpkm_uq_path}")
 
-            print(f"Saved {label} CSVs for {cancer_site}:\n{tpm_path}\n{fpkm_path}\n{fpkm_uq_path}")
 
 # map primary sites with precise naming conventions from GDC
 if __name__ == "__main__":
     import time
     start = time.time()
-    generate_expression_csvs(["Adrenal Gland", "Bladder", "Bone Marrow and Blood", "Brain", "Breast", "Cervix", "Colorectal", "Esophagus", "Eye", "Head and Neck", "Kidney", "Liver", "Lung", "Lymph Nodes", "Ovary", "Pancreas", "Pleura", "Prostate", "Rectum", "Skin", "Soft Tissue", "Stomach", "Testis", "Thymus", "Thyroid", "Uterus"])  # Add more cancer sites here
+    
+    # cancer_sites = [
+    #     "Adrenal Gland", "Bladder", "Bone Marrow and Blood", "Brain", "Breast", 
+    #     "Cervix", "Colorectal", "Esophagus", "Eye", "Head and Neck", "Kidney", 
+    #     "Liver", "Lung", "Lymph Nodes", "Ovary", "Pancreas", "Pleura", 
+    #     "Prostate", "Rectum", "Skin", "Soft Tissue", "Stomach", "Testis", 
+    #     "Thymus", "Thyroid", "Uterus"
+    # ] 
+    # use this for downloading all sites
+    cancer_sites = [
+"Thymus"
+    ] # for testing single site
+    
+    generate_expression_csvs(cancer_sites)
     print(f"\nTotal time: {time.time() - start:.2f} seconds")
+

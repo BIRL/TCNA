@@ -1,10 +1,12 @@
 import sys
 
 sys.dont_write_bytecode = True
-from fastapi import FastAPI, Body, APIRouter, Query, HTTPException, Request
+from fastapi import FastAPI, Body, Query, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+import os
+import pymysql
 from fastapi.responses import JSONResponse
-from typing import List, Dict, Optional, Set, Any
+from typing import List, Dict, Optional, Set
 from cv import cv_calculation
 from std import std_calculation
 from MAD import mad_calculation
@@ -13,9 +15,7 @@ from DEPTH_ITH import depth_calculation
 from cv_2 import cv2_calculation
 from mean import mean_calculation
 from get_pathway_genes import fetch_kegg_genes, fetch_go_genes
-import gseapy as gp
 import re
-import pymysql
 import pandas as pd
 import numpy as np
 import math
@@ -27,7 +27,6 @@ import io
 from pydantic import BaseModel
 
 # Logging setup
-router = APIRouter()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -69,18 +68,13 @@ def sanitize_floats(obj):
 class GeneRequest(BaseModel):
     genes: List[str]
 
-class Pathway(BaseModel):
-    value: str
-    label: str
-    category: str
 
-#z-score normalization for heatmaps in pathways
 def zscore_series(values: pd.Series) -> pd.Series:
-    """Return Z-score (standardised) series.  NaN → NaN."""
+    """Return Z-score (standardised) series. NaN → NaN."""
     if len(values) == 0:
         return values
     mean = values.mean()
-    std  = values.std(ddof=1)
+    std = values.std(ddof=1)
     if std == 0:
         return pd.Series([0.0] * len(values), index=values.index)
     return (values - mean) / std
@@ -95,16 +89,6 @@ def compute_metrics(values: pd.Series):
     cv = (std / mean) * 100 if mean != 0 else np.nan
     cv2 = cv**2 if not np.isnan(cv) else np.nan
     return {"mean": mean, "std": std, "mad": mad, "cv": cv, "cv_squared": cv2}
-
-def normalize_input(items: Optional[List[str]]) -> List[str]:
-    result = []
-    if not items:
-        return result
-    for item in items:
-        if not item:
-            continue
-        result.extend([x.strip().upper() for x in re.split(r"[,;]+", item) if x.strip()])
-    return result
 
 # site selector
 @app.get("/api/sites")
@@ -127,45 +111,238 @@ def get_genes():
     """Fetch all available gene symbols."""
     with get_connection() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT DISTINCT gene_symbol FROM genes WHERE gene_symbol IS NOT NULL ORDER BY gene_symbol")
+        cur.execute("SELECT gene_symbol FROM genes WHERE gene_symbol IS NOT NULL ORDER BY gene_symbol")
         return {"genes": [row["gene_symbol"] for row in cur.fetchall()]}
 
+@app.get("/api/gene_names")
+def get_gene_names(ensembl_ids: str):
+    """
+    ?ensembl_ids=ENSG000001,ENSG000002
+    → {"ENSG000001": "BRCA1", "ENSG000002": "TP53", ...}
+    """
+    ids = ensembl_ids.split(",")
+    placeholders = ",".join(["%s"] * len(ids))
+    sql = f"SELECT ensembl_id, gene_symbol FROM genes WHERE ensembl_id IN ({placeholders})"
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(sql, ids)
+        return dict(cur.fetchall())
+    
+@app.get("/api/ensembl/{gene}")
+def get_ensembl_id(gene: str):
+    """Fetch Ensembl ID for a specific gene symbol."""
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT ensembl_id FROM genes WHERE gene_symbol = %s LIMIT 1",
+            (gene,),
+        )
+        row = cur.fetchone()
+        if row:
+            return {"ensembl_id": row["ensembl_id"]}
+        return {"ensembl_id": None}
 
-# gene analysis 
+@app.get("/api/gene_IDs")
+def get_all_genes():
+    """Fetch all genes with their Ensembl IDs."""
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT gene_symbol, ensembl_id FROM genes WHERE ensembl_id IS NOT NULL ORDER BY gene_symbol")
+        rows = cur.fetchall()
+
+    gene_map: dict[str, list[str]] = {}
+    for row in rows:
+        gene = row["gene_symbol"]
+        ens_id = row["ensembl_id"]
+        if gene not in gene_map:
+            gene_map[gene] = []
+        gene_map[gene].append(ens_id)
+
+    return {"genes": gene_map}
+
+
+# Top noisy genes dashboard
+@app.get("/api/top-noisy-genes")
+def get_top_noisy_genes(
+    norm: str = Query(..., description="tpm, fpkm, or fpkm_uq"),
+    top_n: int = Query(500, ge=0, le=500),
+    sites: Optional[str] = Query(None, description="Comma-separated site names"),
+    tcga_codes: Optional[str] = Query(None, description="Comma-separated TCGA codes e.g. LUAD,LUSC")
+):
+    if norm not in ["tpm", "fpkm", "fpkm_uq"]:
+        raise HTTPException(400, "Invalid normalization")
+
+    with get_connection() as conn:
+        cur = conn.cursor(pymysql.cursors.DictCursor)
+
+        # === STEP 1: Check if noisy_gene_cache table exists ===
+        cur.execute("""
+            SELECT COUNT(*) AS table_exists
+            FROM information_schema.tables
+            WHERE table_schema = DATABASE()
+              AND table_name = 'noisy_gene_cache'
+        """)
+        table_exists = cur.fetchone()['table_exists'] == 1
+
+        if not table_exists:
+            sql_dump_path = "./noisy_gene_cache.sql"                
+            if not os.path.exists(sql_dump_path):
+                raise HTTPException(
+                    status_code=500,
+                    detail="noisy_gene_cache table is missing and noisy_gene_cache.sql dump file not found."
+                )
+
+            print("noisy_gene_cache table not found. Creating and populating from SQL dump...")
+            
+            # Read and execute the SQL dump
+            with open(sql_dump_path, 'r', encoding='utf-8') as f:
+                sql_commands = f.read()
+
+            # Split by semicolon and filter out empty statements
+            statements = [stmt.strip() for stmt in sql_commands.split(';') if stmt.strip()]
+
+            try:
+                for statement in statements:
+                    cur.execute(statement)
+                conn.commit()
+                print("noisy_gene_cache table created and populated successfully.")
+            except Exception as e:
+                conn.rollback()
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to create noisy_gene_cache table from dump: {str(e)}"
+                )
+
+        # === STEP 2: Proceed with original logic (table now guaranteed to exist) ===
+        filter_sql = ""
+        params = [norm]  # for tumor query
+
+        # CASE 1: If user gives cancer types
+        if tcga_codes:
+            codes = [c.strip() for c in tcga_codes.split(",") if c.strip()]
+            placeholder = ",".join(["%s"] * len(codes))
+            filter_sql += (
+                f" AND n.cancer_type_id IN (SELECT id FROM cancer_types "
+                f"WHERE tcga_code IN ({placeholder}))"
+            )
+            params.extend(codes)
+
+        # CASE 2: If user gives sites
+        elif sites:
+            site_list = [s.strip() for s in sites.split(",") if s.strip()]
+            placeholder = ",".join(["%s"] * len(site_list))
+            filter_sql += f" AND s.name IN ({placeholder})"
+            params.extend(site_list)
+
+        # CASE 3: No filters provided → get common noisy genes across ALL sites
+        else:
+            # --- Find all site IDs available ---
+            cur.execute(
+                "SELECT DISTINCT site_id FROM noisy_gene_cache WHERE norm = %s AND sample_type='tumor'",
+                (norm,)
+            )
+            all_sites = [row["site_id"] for row in cur.fetchall()]
+
+            if not all_sites:
+                return {"genes": [], "count": 0}
+
+            placeholder = ",".join(["%s"] * len(all_sites))
+
+            # Override filter: restrict to all sites
+            filter_sql += f" AND n.site_id IN ({placeholder})"
+            params.extend(all_sites)
+
+            # --- Use aggregated CV across sites ---
+            # Replace the tumor_query later with site-aggregated ranking
+            aggregated_mode = True
+
+        # ---- Query #1: Tumor CV ----
+        tumor_query = f"""
+            SELECT g.gene_symbol,
+                   n.gene_id,
+                   n.cv AS cv_tumor,
+                   n.site_id,
+                   s.name AS site_name
+            FROM noisy_gene_cache n
+            JOIN genes g ON n.gene_id = g.id
+            JOIN sites s ON n.site_id = s.id
+            WHERE n.norm = %s AND n.sample_type = 'tumor'
+            {filter_sql}
+            ORDER BY n.cv DESC
+            LIMIT %s
+        """
+        params_with_limit = params + [top_n]
+
+        cur.execute(tumor_query, params_with_limit)
+        tumor_rows = cur.fetchall()
+
+        # ---- Prepare for normal lookup ----
+        if not tumor_rows:
+            return {"genes": [], "count": 0}
+
+        # ---- Query #2: Normal CV (same filters as tumor for consistency) ----
+        normal_query = f"""
+            SELECT g.gene_symbol,
+                   n.gene_id,
+                   n.cv AS cv_normal,
+                   n.site_id,
+                   s.name AS site_name
+            FROM noisy_gene_cache n
+            JOIN genes g ON n.gene_id = g.id
+            JOIN sites s ON n.site_id = s.id
+            WHERE n.norm = %s AND n.sample_type = 'normal'
+            {filter_sql}
+            ORDER BY n.cv DESC
+            LIMIT %s
+        """
+
+        cur.execute(normal_query, params_with_limit)
+        normal_rows = cur.fetchall()
+
+        # Build lookup dict: (gene_id, site_id) -> cv_normal
+        normal_lookup = {
+            (row["gene_id"], row["site_id"]): row["cv_normal"]
+            for row in normal_rows
+        }
+
+        # ---- Merge tumor + normal ----
+        merged = []
+        for r in tumor_rows:
+            key = (r["gene_id"], r["site_id"])
+            cv_normal = normal_lookup.get(key)
+
+            merged.append({
+                "gene_symbol": r["gene_symbol"],
+                "cv_tumor": round(float(r["cv_tumor"]), 6) * 100,
+                "cv_normal": round(float(cv_normal), 6) * 100 if cv_normal is not None else None,
+                "site_name": r["site_name"]
+            })
+
+        return {"genes": merged, "count": len(merged)}
+
+# gene analysis
 @app.get("/api/gene_noise")
 def get_gene_noise(
-    cancer_site: list[str] = Query(..., description="One or more cancer sites (e.g., Lung, Liver, Adrenal Gland)"),
+    cancer_site: list[str] = Query(..., description="One or more cancer sites"),
     cancer_type: list[str] = Query(None, description="Optional list of cancer types (TCGA codes)"),
-    gene_ids: list[str] = Query(..., description="One or more gene IDs or symbols (e.g., TP53, EGFR)")
+    gene_ids: list[str] = Query(..., description="One or more gene symbols or Ensembl IDs")
 ):
-    """
-    Compute expression noise metrics for one or more cancer sites and genes.
-    Returns JSON with structure:
-    {
-      site: {
-        gene_symbol: {
-          norm_method: { "raw": {...}, "log2": {...} }
-        }
-      }
-    }
-    """
     conn = get_connection()
     cur = conn.cursor(pymysql.cursors.DictCursor)
 
     results = {}
-    debug_info = {}
     sample_counts = {}
 
     try:
         for site in cancer_site:
+            # ── Resolve site_id ─────────────────────────────────────
             cur.execute("SELECT id FROM sites WHERE name = %s", (site,))
             site_row = cur.fetchone()
             if not site_row:
-                debug_info[site] = {"error": f"Site '{site}' not found."}
                 continue
             site_id = site_row["id"]
 
-            # Determine all cancer types for this site
+            # ── Resolve cancer types ───────────────────────────────
             if cancer_type:
                 cur.execute(
                     "SELECT tcga_code FROM cancer_types WHERE site_id = %s AND tcga_code IN %s",
@@ -174,12 +351,10 @@ def get_gene_noise(
             else:
                 cur.execute("SELECT tcga_code FROM cancer_types WHERE site_id = %s", (site_id,))
             cancer_types = [row["tcga_code"] for row in cur.fetchall()]
-
             if not cancer_types:
-                debug_info[site] = {"error": f"No cancer types found for site '{site}'."}
                 continue
 
-            # Count tumor/normal samples for the site
+            # ── Sample counts ──────────────────────────────────────
             cur.execute(
                 """
                 SELECT s.sample_type, COUNT(*) AS count
@@ -190,96 +365,96 @@ def get_gene_noise(
                 """,
                 (site_id, tuple(cancer_types)),
             )
-            site_counts = {"tumor": 0, "normal": 0}
+            counts = {"tumor": 0, "normal": 0}
             for row in cur.fetchall():
-                stype = row["sample_type"].lower()
-                if stype in site_counts:
-                    site_counts[stype] = row["count"]
-            sample_counts[site] = site_counts
+                if row["sample_type"].lower() in counts:
+                    counts[row["sample_type"].lower()] = row["count"]
+            sample_counts[site] = counts
 
-            # Initialize results for this site
+            # ── Initialize site entry ──────────────────────────────
             results[site] = {}
 
-            # Loop over all requested genes
+            # ── Process each requested gene ───────────────────────
             for gene_input in gene_ids:
                 cur.execute(
-                    "SELECT id, ensembl_id, gene_symbol FROM genes WHERE ensembl_id = %s OR gene_symbol = %s",
+                    """
+                    SELECT id, ensembl_id, gene_symbol 
+                    FROM genes 
+                    WHERE ensembl_id = %s OR gene_symbol = %s
+                    """,
                     (gene_input, gene_input),
                 )
                 gene_row = cur.fetchone()
                 if not gene_row:
-                    debug_info.setdefault(site, {})[gene_input] = {"error": f"Gene '{gene_input}' not found."}
                     continue
 
                 gene_id = gene_row["id"]
                 gene_symbol = gene_row["gene_symbol"]
-                ensembl_id = gene_row["ensembl_id"]
+                ensembl_id_full = gene_row["ensembl_id"]          # ← KEEP .17 !
 
-                # Prepare gene entry
-                results[site][gene_symbol] = {}
+                # Human-readable + unique key
+                display_key = f"{gene_symbol} ({ensembl_id_full})"
 
-                for norm_method in ["tpm", "fpkm", "fpkm_uq"]:
-                    all_tumor_vals, all_normal_vals = [], []
+                results[site][display_key] = {
+                    "gene_symbol": gene_symbol,
+                    "ensembl_id": ensembl_id_full,                # full version preserved
+                }
+
+                # ── Loop over normalization methods ─────────────────
+                for norm in ["tpm", "fpkm", "fpkm_uq"]:
+                    tumor_vals, normal_vals = [], []
 
                     for ct in cancer_types:
-                        cur.execute(
-                            f"""
-                            SELECT s.sample_type, e.{norm_method} AS expr
+                        cur.execute(f"""
+                            SELECT s.sample_type, e.{norm}
                             FROM gene_expressions e
                             JOIN samples s ON s.id = e.sample_id
                             JOIN cancer_types c ON c.id = s.cancer_type_id
                             WHERE c.site_id = %s AND c.tcga_code = %s AND e.gene_id = %s
-                            """,
-                            (site_id, ct, gene_id),
-                        )
-                        rows = cur.fetchall()
-                        if not rows:
-                            continue
-                        df = pd.DataFrame(rows)
-                        all_tumor_vals.extend(df[df["sample_type"].str.lower() == "tumor"]["expr"].tolist())
-                        all_normal_vals.extend(df[df["sample_type"].str.lower() == "normal"]["expr"].tolist())
+                              AND e.{norm} IS NOT NULL
+                        """, (site_id, ct, gene_id))
+                        df = pd.DataFrame(cur.fetchall())
+                        tumor_vals.extend(df[df["sample_type"].str.lower() == "tumor"][norm].tolist())
+                        normal_vals.extend(df[df["sample_type"].str.lower() == "normal"][norm].tolist())
 
-                    tumor = pd.Series(all_tumor_vals)
-                    normal = pd.Series(all_normal_vals)
+                    tumor = pd.Series(tumor_vals)
+                    normal = pd.Series(normal_vals)
 
+                    # Raw metrics
                     tumor_stats = compute_metrics(tumor)
                     normal_stats = compute_metrics(normal)
+
+                    # Log2(+1) metrics
+                    tumor_log = np.log2(tumor + 1)
+                    normal_log = np.log2(normal + 1)
+                    tumor_log_stats = compute_metrics(tumor_log)
+                    normal_log_stats = compute_metrics(normal_log)
+
+                    # Differential noise (log2 fold-change of CV)
                     logfc_raw = np.nan
-                    if tumor_stats and normal_stats and normal_stats["cv"] > 0:
-                        logfc_raw = math.log2((tumor_stats["cv"]/100) / (normal_stats["cv"]/100))
+                    if tumor_stats and normal_stats and normal_stats.get("cv", 0) > 0:
+                        logfc_raw = np.log2((tumor_stats["cv"]/100) / (normal_stats["cv"]/100))
 
-                    
+                    logfc_log2 = np.nan
+                    if tumor_log_stats and normal_log_stats:
+                        logfc_log2 = (tumor_log_stats["cv"]/100) - (normal_log_stats["cv"]/100)
 
-                    # Log2-transformed
-                    df_all = pd.DataFrame({
-                        "sample_type": ["tumor"] * len(tumor) + ["normal"] * len(normal),
-                        "expr": list(tumor) + list(normal),
-                    })
-                    df_all["log2_expr"] = np.log2(df_all["expr"] + 1)
-
-                    tumor_log = df_all[df_all["sample_type"] == "tumor"]["log2_expr"]
-                    normal_log = df_all[df_all["sample_type"] == "normal"]["log2_expr"]
-
-                    tumor_stats_log = compute_metrics(tumor_log)
-                    normal_stats_log = compute_metrics(normal_log)
-                    logfc_log = np.nan
-                    if tumor_stats_log and normal_stats_log:
-                        logfc_log = (tumor_stats_log["cv"]/100) - (normal_stats_log["cv"]/100)
-
-                    results[site][gene_symbol][norm_method] = {
+                    results[site][display_key][norm] = {
                         "raw": {
                             **(tumor_stats or {}),
                             **{f"{k}_normal": v for k, v in (normal_stats or {}).items()},
-                            "logfc": logfc_log,
+                            "log2_fc_cv": float(logfc_raw) if not np.isnan(logfc_raw) else None,
+                            "n_tumor": len(tumor),
+                            "n_normal": len(normal),
                         },
                         "log2": {
-                            **(tumor_stats_log or {}),
-                            **{f"{k}_normal": v for k, v in (normal_stats_log or {}).items()},
-                            "logfc": logfc_log,
+                            **(tumor_log_stats or {}),
+                            **{f"{k}_normal": v for k, v in (normal_log_stats or {}).items()},
+                            "log2_fc_cv": float(logfc_log2) if not np.isnan(logfc_log2) else None,
+                            "n_tumor": len(tumor),
+                            "n_normal": len(normal),
                         },
-                        
                     }
-                    print(logfc_raw, logfc_log)
 
         final_output = {
             "results": sanitize_floats(results),
@@ -287,17 +462,13 @@ def get_gene_noise(
         }
 
     except Exception as e:
-        final_output = {"error": f"Unexpected error: {str(e)}"}
+        import traceback
+        final_output = {"error": str(e), "traceback": traceback.format_exc()}
     finally:
         conn.close()
-
-    # Clean up NaN, inf, etc. for JSON compliance
-    results = sanitize_floats(final_output)
-    print(results)
-    return JSONResponse(results)
+    return JSONResponse(final_output)
 
 # pathway analysis
-
 class GeneNoiseRequest(BaseModel):
     cancer: List[str]                 # or str if you want comma-separated
     genes: List[str]
@@ -348,11 +519,11 @@ def get_gene_noise_pathway(req: GeneNoiseRequest = Body(...)):
 
         # ---- gene lookup -------------------------------------------------
         cur.execute(
-            "SELECT id, gene_symbol FROM genes WHERE gene_symbol IN %s",
+            "SELECT id, ensembl_id, gene_symbol FROM genes WHERE ensembl_id in %s or gene_symbol IN %s",
             (tuple(gene_symbols),)
         )
         gene_rows = cur.fetchall()
-        gene_map = {r["gene_symbol"]: r["id"] for r in gene_rows}
+        gene_map = {r["ensembl_id"]: r["id"] for r in gene_rows}
         missing = set(gene_symbols) - set(gene_map.keys())
         if missing:
             raise HTTPException(status_code=400, detail=f"Genes not found: {', '.join(missing)}")
@@ -456,8 +627,6 @@ def get_gene_noise_pathway(req: GeneNoiseRequest = Body(...)):
                         "cv_normal":    n_cv,
                         "logfc":        logfc,
                     }
-
-        # print(sanitize_floats(results))
 
         return JSONResponse(sanitize_floats(results))
     
@@ -571,26 +740,6 @@ def post_pathway_analysis(req: PathwayAnalysisRequest):
             req.logfc_threshold
         )
 
-        # --- NEW LOGIC: fetch pathway genes (KEGG or GO) ---
-        if req.pathway:
-            if req.pathway.upper().startswith("GO:"):
-                fetched_genes = fetch_go_genes(req.pathway)
-            else:
-                fetched_genes = fetch_kegg_genes(req.pathway)
-
-            if not fetched_genes:
-                raise HTTPException(status_code=404, detail=f"No genes found for pathway '{req.pathway}'")
-
-            # ensure they exist in DB
-            cur.execute("SELECT id, gene_symbol FROM genes WHERE gene_symbol IN %s", (tuple(fetched_genes),))
-            gene_rows = cur.fetchall()
-
-            if not gene_rows:
-                raise HTTPException(status_code=404, detail=f"No pathway genes found in database for '{req.pathway}'")
-
-            gene_list = [row["id"] for row in gene_rows]
-            selected_gene_set = set(row["gene_symbol"] for row in gene_rows)
-
         # --- Existing downstream analysis ---
         sample_counts = get_sample_counts(cur, cancer_sites)
         results = compute_gene_stats(cur, cancer_sites, gene_list)
@@ -649,7 +798,6 @@ def run_stringdb_enrichment(gene_set: Set[str], top_n: int, species: int = 9606)
 
 def get_genes(cur, genes_input: List[str], cancer_sites: List[str], logfc_threshold: float) -> tuple[List[int], Set[str], Optional[str]]:
         """Get gene list from input or auto-select top DE genes."""
-        print(genes_input)
         if genes_input:
             unique_genes = list(dict.fromkeys(g.strip().upper() for gene in genes_input for g in str(gene).split(",") if g.strip()))
             gene_list, gene_set = [], set()
@@ -685,9 +833,10 @@ def compute_gene_stats(cur, cancer_sites: List[str], gene_list: List[int]) -> Di
     
     for norm_method in ["tpm", "fpkm", "fpkm_uq"]:
         for gene_id in gene_list:
-            cur.execute("SELECT gene_symbol FROM genes WHERE id = %s", (gene_id,))
-            gene_symbol = cur.fetchone()["gene_symbol"]
-            
+            cur.execute("SELECT ensembl_id, gene_symbol FROM genes WHERE id = %s", (gene_id,))
+            gene_row = cur.fetchone()
+            gene_symbol = gene_row["gene_symbol"]
+            ensembl_id = gene_row["ensembl_id"]
             for site in cancer_sites:
                 cur.execute(
                     f"""
@@ -719,12 +868,20 @@ def compute_gene_stats(cur, cancer_sites: List[str], gene_list: List[int]) -> Di
                                  if (t.get("cv") is not None and n.get("cv") is not None)
                                  else float("nan"))
 
+                    # results[scale][norm_method]["gene_stats"].setdefault(gene_symbol, {})[site_key] = {
                     results[scale][norm_method]["gene_stats"].setdefault(gene_symbol, {})[site_key] = {
-                        **{f"{k}_tumor": v for k, v in t.items()},
-                        **{f"{k}_normal": v for k, v in n.items()},
-                        "logfc": logfc_val,
-                    }
+                            "ensembl_id": ensembl_id,   # ← ADD THIS LINE
+                            **{f"{k}_tumor": v for k, v in t.items()},
+                            **{f"{k}_normal": v for k, v in n.items()},
+                            "logfc": logfc_val,
+                        }
+                        # **{f"{k}_tumor": v for k, v in t.items()},
+                        # **{f"{k}_normal": v for k, v in n.items()},
+                        # "logfc": logfc_val,
+                    # }
                     # ensure heatmap_data entry exists and write mean safely
+                    # results[scale][norm_method]["heatmap_data"].setdefault(gene_symbol, {})["ensembl_id"] = ensembl_id
+                    # results[scale][norm_method]["noise_metrics"].setdefault(gene_symbol, {})[site_key]["ensembl_id"] = ensembl_id
                     results[scale][norm_method]["heatmap_data"].setdefault(gene_symbol, {})
                     results[scale][norm_method]["heatmap_data"][gene_symbol][f"{site}_normal"] = n.get("mean", 0)
                     results[scale][norm_method]["heatmap_data"][gene_symbol][f"{site}_tumor"] = t.get("mean", 0)
@@ -804,20 +961,11 @@ def get_tumor_results(cancer_site: str = Query(...), cancer_types: Optional[List
                 **{k: row[k] for k in ["tpm_depth2", "fpkm_depth2", "fpkm_uq_depth2", "tpm_depth", "fpkm_depth", "fpkm_uq_depth"]}
             } for row in cur.fetchall()
         ]
-        # === NEW: TOP 50 NOISY GENES (per normalization) ===
-        # tcga_codes = [row["tcga_code"] for row in cancer_type_rows]
-        # top_noisy = {}
-        # for norm in ("tpm", "fpkm", "fpkm_uq"):
-        #     top_noisy[norm] = _top_noisy_genes(cur, site_id, tcga_codes if cancer_types else None, norm)
-
         return JSONResponse(sanitize_floats({
             "results": results,
             "sample_counts": sample_counts,
-            # "top_noisy_genes": top_noisy,   # <-- ONLY ADDED FIELD
             "error": None
         }))
-
-        # return JSONResponse(sanitize_floats({"results": results, "sample_counts": sample_counts, "error": None}))
 
 @app.post("/api/csv-upload")
 async def csv_upload(request: Request):
@@ -827,6 +975,7 @@ async def csv_upload(request: Request):
         top_n = int(form.get('top_n', 15))
         gene_set = form.get('gene_set', 'KEGG_2021_Human') if analysis_type == 'Pathway' else None
         genes = form.get('genes', '')
+        print(genes)
 
         logger.info(f"Input: analysis_type={analysis_type}, top_n={top_n}, gene_set={gene_set}, genes={genes}")
 
@@ -835,6 +984,7 @@ async def csv_upload(request: Request):
             return JSONResponse({"error": f"Invalid analysis type: {analysis_type}"}, status_code=400)
 
         selected_genes = [g.strip().upper() for g in genes.split(',') if g.strip()] if genes.strip() else None
+        print(selected_genes)
         if analysis_type in ['Gene', 'Pathway'] and not selected_genes and 'expression_file' not in form:
             return JSONResponse({"error": "Gene or Pathway Analysis requires a gene list or expression data"}, status_code=400)
 
@@ -960,7 +1110,6 @@ async def csv_upload(request: Request):
             response["log2"]["metrics"] = metrics
 
         logger.info(f"CSV upload response generated for {analysis_type} analysis")
-        print(response)
         return JSONResponse(response)
 
     except Exception as e:
