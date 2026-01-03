@@ -57,13 +57,6 @@ cd backend/scripts/data
 mysql -u your_username -p < create_tables.sql
 ```
 
-It creates the `cancer_db` database and all required tables:
-- `genes` - Gene metadata
-- `sites` - Cancer site information
-- `cancer_types` - TCGA project codes
-- `samples` - Sample metadata
-- `gene_expressions` - Expression data
-
 ### Step 2: Configure Database Connection
 
 ```sh
