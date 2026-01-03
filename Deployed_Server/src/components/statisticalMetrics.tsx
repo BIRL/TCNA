@@ -112,6 +112,17 @@ const StatisticalMetrics: React.FC<StatisticalMetricsProps> = ({
                 d.normalizationMethod === normalizationMethod &&
                 d.dataFormat === currentDataFormat
             );
+            const sortKey =
+              metric === "logfc"
+                ? "logfc"
+                : selectedGroups.includes("tumor")
+                ? `${metric}_tumor`
+                : `${metric}_normal`;
+
+            // ---------- sorted data ----------
+            const sortedData = [...metricData].sort(
+              (a, b) => (a[sortKey] ?? 0) - (b[sortKey] ?? 0)
+            );
             console.log(`Metric ${metric} Data Length:`, metricData.length, "Format:", currentDataFormat, "Sample:", metricData.slice(0, 2));
             return (
               selectedNoiseMetrics.includes(displayMetric) && visiblePlots[metric] && (
@@ -147,6 +158,11 @@ const StatisticalMetrics: React.FC<StatisticalMetricsProps> = ({
                                 key={`${metric}-${currentDataFormat}`}
                                 data={metricData}
                                 xKey={analysisType === "cancer-specific" ? "gene_symbol" : "site"}
+                                // xKey={
+                                //   analysisType === "pan-cancer"
+                                //     ? "site"
+                                //     : metricData.map((d) => `${d.gene_symbol} (${d.ensembl_id})`)
+                                // }
                                 yKey="logfc"
                                 title={`Log₂(CV<sub>tumor</sub> / CV<sub>normal</sub>)`}
                                 xLabel={analysisType === "cancer-specific" ? "Genes" : "Cancer Sites"}
@@ -154,7 +170,22 @@ const StatisticalMetrics: React.FC<StatisticalMetricsProps> = ({
                                 // colors={logfcColors[metric]}
                                 colors={metricData.map((d) => (d.logfc < 0 ? "#ef4444c3" : "#3b83f6af"))}
                                 orientation="v"
-                                showLegend={false}
+                                showLegend={true}
+                                showTrendLine={false}
+                                sortByKey="logfc"
+                                sortOrder="asc"
+                                hideXAxisExtras={true}       
+                                absoluteBars={true}     
+                                // customData={metricData.map((d) => ({
+                                //   symbol: d.gene_symbol,
+                                //   ensembl: d.ensembl_id,
+                                //   site: d.site,
+                                // }))}
+                                // hoverTemplate={
+                                //   analysisType === "pan-cancer"
+                                //     ? "%{x}<br>%{y:.4f}<extra></extra>"
+                                //     : "<b>%{customdata.symbol}</b><br>Ensembl: %{customdata.ensembl}<br>Site: %{customdata.site}<br>Value: %{y:.4f}<extra></extra>"
+                                // }
                               />
                             ) : (
                               <div className="text-center text-red-600">
@@ -171,6 +202,11 @@ const StatisticalMetrics: React.FC<StatisticalMetricsProps> = ({
                             key={`${metric}-${currentDataFormat}`}
                             data={metricData}
                             xKey={analysisType === "pan-cancer" ? "site" : "gene_symbol"}
+                            // xKey={
+                            //   analysisType === "pan-cancer"
+                            //     ? "site"
+                            //     : metricData.map((d) => `${d.gene_symbol} (${d.ensembl_id})`)
+                            // }
                             yKey={[
                               ...(selectedGroups.includes("normal") ? ["mean_normal"] : []),
                               ...(selectedGroups.includes("tumor") ? ["mean_tumor"] : []),
@@ -187,6 +223,19 @@ const StatisticalMetrics: React.FC<StatisticalMetricsProps> = ({
                             )}
                             orientation="v"
                             legendLabels={["Normal", "Tumor"]}
+                            // sortByKey={sortKey}
+                            // sortOrder="desc"
+                            hideXAxisExtras={true}  
+                            // customData={metricData.map((d) => ({
+                            //   symbol: d.gene_symbol,
+                            //   ensembl: d.ensembl_id,
+                            //   site: d.site,
+                            // }))}
+                            // hoverTemplate={
+                            //   analysisType === "pan-cancer"
+                            //     ? "%{x}<br>%{y:.4f}<extra></extra>"
+                            //     : "<b>%{customdata.symbol}</b><br>Ensembl: %{customdata.ensembl}<br>Site: %{customdata.site}<br>Value: %{y:.4f}<extra></extra>"
+                            // }
                           />
                         ) : (
                           <PlotlyBarChart
@@ -197,6 +246,11 @@ const StatisticalMetrics: React.FC<StatisticalMetricsProps> = ({
                                 : groupedData[metric][Object.keys(groupedData[metric])[0]] || []
                             }
                             xKey={analysisType === "pan-cancer" ? "site" : "gene_symbol"}
+                            // xKey={
+                            //   analysisType === "pan-cancer"
+                            //     ? "site"
+                            //     : metricData.map((d) => `${d.gene_symbol} (${d.ensembl_id})`)
+                            // }
                             yKey={[
                               ...(selectedGroups.includes("normal") ? [`${metric}_normal`] : []),
                               ...(selectedGroups.includes("tumor") ? [`${metric}_tumor`] : []),
@@ -209,6 +263,19 @@ const StatisticalMetrics: React.FC<StatisticalMetricsProps> = ({
                             )}
                             orientation="v"
                             legendLabels={["Normal", "Tumor"]}
+                            // sortByKey={sortKey}
+                            // sortOrder="desc"
+                            hideXAxisExtras={true} 
+                            // customData={metricData.map((d) => ({
+                            //   symbol: d.gene_symbol,
+                            //   ensembl: d.ensembl_id,
+                            //   site: d.site,
+                            // }))}
+                            // hoverTemplate={
+                            //   analysisType === "pan-cancer"
+                            //     ? "%{x}<br>%{y:.4f}<extra></extra>"
+                            //     : "<b>%{customdata.symbol}</b><br>Ensembl: %{customdata.ensembl}<br>Site: %{customdata.site}<br>Value: %{y:.4f}<extra></extra>"
+                            // } 
                           />
                         )}
                       </div>

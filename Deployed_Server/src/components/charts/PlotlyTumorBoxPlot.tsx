@@ -1,5 +1,3 @@
-
-// make the baseline of xaxis black
 import React, { useEffect, useRef } from "react";
 import Plotly from "plotly.js-dist-min";
 import { Button } from "@/components/ui/button";
@@ -10,7 +8,7 @@ interface PlotlyBoxChartProps {
   title: string;
   xKey: string;
   yLabel?: string;
-  normalizationMethod: string; // new prop
+  normalizationMethod: string; 
   selectedGroups: string[];
   colorMap?: { [key: string]: string };
   className?: string;

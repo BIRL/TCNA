@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 interface DataTableProps<T> {
   data: T[];
   columns: {
-    key: keyof T | string;
+    key?: keyof T | string;
     header: string;
     render?: (value: any, row: T) => React.ReactNode;
     sortable?: boolean;
@@ -93,82 +93,85 @@ export const DataTable = <T extends Record<string, any>>({
     URL.revokeObjectURL(url);
   };
 
-  return (
-    <div className="relative">
-      {showDownloadButtons && (
-        <div className="flex justify-end mb-2 gap-2">
-          <Button size="sm" variant="outline" className="h-6 px-2 text-xs" onClick={downloadCSV}>
-            Download CSV
-          </Button>
-          <Button size="sm" variant="outline" className="h-6 px-2 text-xs" onClick={downloadJSON}>
-            Download JSON
-          </Button>
-        </div>
-      )}
 
-      <div
-  className={`relative ${className}`}
-  style={{
-    maxHeight: scrollHeight,
-    width: typeof containerWidth === "number" ? `${containerWidth}px` : containerWidth,
-    overflowY: "auto",
-    overflowX: "auto",
-  }}
->
-  {/* <table className="w-full border-collapse"> */}
-  <table className="min-w-full border-collapse table-auto">
-    <thead
-    //   className={`${stickyHeader ? "sticky top-0 z-30 bg-white" : ""}`}
-    // >
-     className={`${
-    stickyHeader
-      ? "sticky top-0 z-30 bg-gradient-to-b from-blue-50 to-white border-b border-gray-300 shadow-sm"
-      : ""
-  }`}
->
-      <tr>
-        {columns.map((column) => (
-          <th
-            key={String(column.key)}
-            onClick={() => column.sortable && handleSort(column.key)}
-            className={`text-blue-700 font-semibold px-4 py-2 border-b border-gray-200 bg-white ${
-              column.sortable ? "cursor-pointer select-none" : ""
-            }`}
-          >
-            <div className="flex items-center">
-              {column.header}
-              {column.sortable && sortKey === column.key && (
-                <span className="ml-1">{sortOrder === "asc" ? "↑" : "↓"}</span>
-              )}
-            </div>
-          </th>
-        ))}
-      </tr>
-    </thead>
-    <tbody>
-      {sortedData.map((row, idx) => (
-        <tr
-          key={idx}
-          onClick={() => onRowClick?.(row)}
-          className={`${onRowClick ? "cursor-pointer hover:bg-blue-50" : ""} ${
-            rowClassName ? rowClassName(row, idx) : ""
+return (
+  <div className="relative">
+    {showDownloadButtons && (
+      <div className="flex justify-end mb-2 gap-2">
+        <Button size="sm" variant="outline" className="h-6 px-2 text-xs" onClick={downloadCSV}>
+          Download CSV
+        </Button>
+        <Button size="sm" variant="outline" className="h-6 px-2 text-xs" onClick={downloadJSON}>
+          Download JSON
+        </Button>
+      </div>
+    )}
+
+    <div
+      className={`overflow-auto border border-gray-200 rounded-lg shadow-sm ${className}`}
+      style={{
+        maxHeight: scrollHeight,
+        width: typeof containerWidth === "number" ? `${containerWidth}px` : containerWidth,
+      }}
+    >
+      <table className="min-w-full divide-y divide-gray-200">
+        <thead
+          className={`bg-gradient-to-b from-blue-50 to-white border-b border-gray-300 shadow-sm ${
+            stickyHeader ? "sticky top-0 z-20" : ""
           }`}
         >
-          {columns.map((column) => (
-            <td
-              key={String(column.key)}
-              className={`px-4 py-2 border-b whitespace-normal break-words ${
-                column.key === "gene" ? "font-medium" : ""
-              }`}
+          <tr>
+            {columns.map((column, idx) => (
+              <th
+                key={String(column.key)}
+                onClick={() => column.sortable && handleSort(column.key)}
+                className={`
+                  px-4 py-3 text-left text-small font-semibold text-blue-700 tracking-wider
+                  ${column.sortable ? "cursor-pointer select-none hover:bg-blue-100" : ""}
+                  ${idx === 0 ? "sticky left-0 z-10 bg-gradient-to-r from-blue-50 to-blue-50/90 shadow-r" : "bg-white"}
+                  border-r border-gray-200
+                `}
+              >
+                <div className="flex items-center">
+                  {column.header}
+                  {column.sortable && sortKey === column.key && (
+                    <span className="ml-1">{sortOrder === "asc" ? "↑" : "↓"}</span>
+                  )}
+                </div>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="bg-white divide-y divide-gray-200">
+          {sortedData.map((row, idx) => (
+            <tr
+              key={idx}
+              onClick={() => onRowClick?.(row)}
+              className={`
+                ${onRowClick ? "cursor-pointer hover:bg-blue-50" : ""}
+                ${rowClassName ? rowClassName(row, idx) : ""}
+                ${idx % 2 === 0 ? "bg-gray-50/30" : "bg-white"}
+              `}
             >
-              {column.render ? column.render(row[column.key], row) : row[column.key]}
-            </td>
+              {columns.map((column, colIdx) => (
+                <td
+                  key={String(column.key)}
+                  className={`
+                    px-4 py-3 text-sm whitespace-nowrap
+                    ${colIdx === 0 
+                      ? "sticky left-0 z-10 font-medium bg-white shadow-r border-r border-gray-200" 
+                      : "bg-inherit"}
+                    ${column.key === "gene" ? "font-medium text-blue-900" : "text-gray-700"}
+                  `}
+                >
+                  {column.render ? column.render(row[column.key as keyof T], row) : row[column.key as keyof T]}
+                </td>
+              ))}
+            </tr>
           ))}
-        </tr>
-      ))}
-    </tbody>
-  </table>
-</div>
+        </tbody>
+      </table>
     </div>
-  );
-};
+  </div>
+);
+}

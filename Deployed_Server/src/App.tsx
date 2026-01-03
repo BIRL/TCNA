@@ -16,6 +16,7 @@ import TumourResults from "./pages/TumorResults";
 import NotFound from "./pages/NotFound";
 import UploadAnalysis from "./pages/useUpload";
 import UploadResults from "./pages/UploadResults";
+import GlobalNoiseAnalysis from "./pages/GlobalNoiseAnalysis";
 
 
 const queryClient = new QueryClient();
@@ -36,6 +37,7 @@ function App() {
             <Route path="/tumour-analysis" element={<TumourAnalysis />} />
             <Route path="/tumor-analysis-results" element={<TumourResults />} />
             <Route path="/upload-analysis" element={<UploadAnalysis />} />
+            <Route path="/global-noise" element={<GlobalNoiseAnalysis />} />
             <Route path="/upload-results" element={<UploadResults />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

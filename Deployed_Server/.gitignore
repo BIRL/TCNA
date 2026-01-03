@@ -23,9 +23,10 @@ dist-ssr
 *.sln
 *.sw?
 venv/
+backend/scripts/env
 .env
-backend/data/raw/
-backend/data/scripts/__pycache__
-backend/data/scripts/db_conn.py
+backend/data/__pycache__
+backend/scripts/__pycache__
+backend/data/db_conn.py
 
 

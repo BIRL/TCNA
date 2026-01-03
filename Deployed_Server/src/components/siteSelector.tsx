@@ -1,4 +1,6 @@
-import { useState, useEffect } from "react";
+'use client';
+
+import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -6,8 +8,14 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 interface CancerTypeSelectorProps {
   selectedCancerTypes: string[];
   onCancerTypesChange: (values: string[]) => void;
+  selectedSites: string[];
   onSitesChange: (siteNames: string[]) => void;
   analysisType: "pan-cancer" | "cancer-specific" | null;
+}
+
+interface Site {
+  id: number;
+  name: string;
 }
 
 interface CancerType {
@@ -15,22 +23,24 @@ interface CancerType {
   site_id: number;
 }
 
-const API_BASE = "/api"; // 
+const API_BASE = "/api";
 
 const CancerTypeSelector = ({
   selectedCancerTypes,
   onCancerTypesChange,
+  selectedSites,
   onSitesChange,
   analysisType,
 }: CancerTypeSelectorProps) => {
-  const [cancerSites, setCancerSites] = useState<{ id: number; name: string }[]>([]);
-  const [selectedSites, setSelectedSites] = useState<string[]>([]);
+  const [cancerSites, setCancerSites] = useState<Site[]>([]);
   const [cancerTypes, setCancerTypes] = useState<CancerType[]>([]);
   const [loadingSites, setLoadingSites] = useState<boolean>(true);
   const [loadingTypes, setLoadingTypes] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  // === Fetch sites from FastAPI ===
+  /* ------------------------------------------------------------------ */
+  /*  FETCH SITES                                                       */
+  /* ------------------------------------------------------------------ */
   useEffect(() => {
     const fetchSites = async () => {
       setLoadingSites(true);
@@ -38,7 +48,9 @@ const CancerTypeSelector = ({
         const res = await fetch(`${API_BASE}/sites`);
         if (!res.ok) throw new Error("Failed to fetch sites");
         const data = await res.json();
-        setCancerSites(data.sites.sort((a: any, b: any) => a.name.localeCompare(b.name)));
+        setCancerSites(
+          data.sites.sort((a: any, b: any) => a.name.localeCompare(b.name))
+        );
       } catch (err) {
         setError("Failed to load cancer sites.");
         console.error(err);
@@ -49,33 +61,48 @@ const CancerTypeSelector = ({
     fetchSites();
   }, []);
 
-  // === Fetch cancer types from FastAPI ===
-  const fetchCancerTypes = async (newSiteNames: string[]) => {
+  /* ------------------------------------------------------------------ */
+  /*  SHARED: FETCH CANCER TYPES                                        */
+  /* ------------------------------------------------------------------ */
+  const fetchCancerTypes = async (siteNames: string[]) => {
     setLoadingTypes(true);
     try {
-      const newSiteIds = cancerSites
-        .filter((s) => newSiteNames.includes(s.name))
+      const siteIds = cancerSites
+        .filter((s) => siteNames.includes(s.name))
         .map((s) => s.id);
 
-      if (newSiteIds.length === 0) {
+      if (siteIds.length === 0) {
+        // Keep only types from still-selected sites
+        setCancerTypes((prev) =>
+          prev.filter((t) =>
+            selectedSites.some((siteName) => {
+              const site = cancerSites.find((s) => s.name === siteName);
+              return site && t.site_id === site.id;
+            })
+          )
+        );
         setLoadingTypes(false);
         return;
       }
 
       const params = new URLSearchParams();
-      newSiteIds.forEach((id) => params.append("site_ids", id.toString()));
+      siteIds.forEach((id) => params.append("site_ids", String(id)));
 
       const res = await fetch(`${API_BASE}/cancer_types?${params.toString()}`);
       if (!res.ok) throw new Error("Failed to fetch cancer types");
       const data = await res.json();
 
-      setCancerTypes((prev) => [
-        ...prev,
-        ...(data.cancer_types as CancerType[]).filter(
-          (newType) => !prev.some((type) => type.tcga_code === newType.tcga_code)
-        ),
-      ]);
-    } catch (err) {
+      const incoming = (data.cancer_types as CancerType[]).filter((t) =>
+        siteIds.includes(t.site_id)
+      );
+
+      // Merge: keep existing + add new (deduplicated by tcga_code)
+      setCancerTypes((prev) => {
+        const map = new Map(prev.map((t) => [t.tcga_code, t]));
+        incoming.forEach((t) => map.set(t.tcga_code, t));
+        return Array.from(map.values());
+      });
+    } catch (err: any) {
       setError("Failed to load cancer types.");
       console.error(err);
     } finally {
@@ -83,9 +110,48 @@ const CancerTypeSelector = ({
     }
   };
 
-  // === Handle site selection ===
+  /* ------------------------------------------------------------------ */
+  /*  AUTO-FETCH PROJECTS WHEN SITES CHANGE OR ARE RESTORED             */
+  /* ------------------------------------------------------------------ */
+  useEffect(() => {
+    if (selectedSites.length === 0 || cancerSites.length === 0) {
+      setCancerTypes([]);
+      return;
+    }
+
+    const validSiteNames = selectedSites.filter((name) =>
+      cancerSites.some((s) => s.name === name)
+    );
+
+    if (validSiteNames.length > 0) {
+      fetchCancerTypes(validSiteNames);
+    }
+  }, [selectedSites, cancerSites]);
+
+  /* ------------------------------------------------------------------ */
+  /*  DISPLAYED CANCER TYPES (fetched + any previously selected)       */
+  /* ------------------------------------------------------------------ */
+  const displayedCancerTypes = useMemo(() => {
+    const fetched = cancerTypes;
+
+    // Add any selected codes that aren't in the fetched list yet
+    const missingSelected = selectedCancerTypes
+      .filter((code) => !fetched.some((t) => t.tcga_code === code))
+      .map((code) => ({
+        tcga_code: code,
+        site_id:
+          cancerSites.find((s) => selectedSites.includes(s.name))?.id || -1,
+      } as CancerType));
+
+    return [...fetched, ...missingSelected];
+  }, [cancerTypes, selectedCancerTypes, cancerSites, selectedSites]);
+
+  /* ------------------------------------------------------------------ */
+  /*  SITE HANDLERS                                                     */
+  /* ------------------------------------------------------------------ */
   const handleSiteChange = (siteName: string) => {
     let newSelectedSites: string[];
+
     if (analysisType === "cancer-specific") {
       newSelectedSites = [siteName];
       setCancerTypes([]);
@@ -94,19 +160,15 @@ const CancerTypeSelector = ({
     } else {
       if (selectedSites.includes(siteName)) {
         newSelectedSites = selectedSites.filter((s) => s !== siteName);
-        const deselectedSite = cancerSites.find((s) => s.name === siteName);
-        if (deselectedSite) {
-          setCancerTypes((prev) =>
-            prev.filter((type) => type.site_id !== deselectedSite.id)
-          );
+
+        const siteObj = cancerSites.find((s) => s.name === siteName);
+        if (siteObj) {
+          setCancerTypes((prev) => prev.filter((t) => t.site_id !== siteObj.id));
+          const codesToRemove = cancerTypes
+            .filter((t) => t.site_id === siteObj.id)
+            .map((t) => t.tcga_code);
           onCancerTypesChange(
-            selectedCancerTypes.filter(
-              (code) =>
-                !cancerTypes.some(
-                  (type) =>
-                    type.tcga_code === code && type.site_id === deselectedSite.id
-                )
-            )
+            selectedCancerTypes.filter((c) => !codesToRemove.includes(c))
           );
         }
       } else {
@@ -114,76 +176,63 @@ const CancerTypeSelector = ({
         fetchCancerTypes([siteName]);
       }
     }
-    setSelectedSites(newSelectedSites);
+
     onSitesChange(newSelectedSites);
   };
 
   const handleSelectAllSites = () => {
-    if (analysisType === "pan-cancer") {
-      const allSiteNames = cancerSites.map((site) => site.name);
-      setSelectedSites(allSiteNames);
-      onSitesChange(allSiteNames);
-      fetchCancerTypes(allSiteNames);
-    }
+    if (analysisType !== "pan-cancer") return;
+    const all = cancerSites.map((s) => s.name);
+    onSitesChange(all);
+    fetchCancerTypes(all);
   };
 
+  /* ------------------------------------------------------------------ */
+  /*  PROJECT HANDLERS                                                  */
+  /* ------------------------------------------------------------------ */
   const handleTypeChange = (tcgaCode: string) => {
-    let newSelectedTypes: string[];
-    if (selectedCancerTypes.includes(tcgaCode)) {
-      newSelectedTypes = selectedCancerTypes.filter((t) => t !== tcgaCode);
-    } else {
-      newSelectedTypes = [...selectedCancerTypes, tcgaCode];
-    }
-    onCancerTypesChange(newSelectedTypes);
+    const newSelected = selectedCancerTypes.includes(tcgaCode)
+      ? selectedCancerTypes.filter((c) => c !== tcgaCode)
+      : [...selectedCancerTypes, tcgaCode];
+    onCancerTypesChange(newSelected);
   };
 
   const handleSelectAllTypes = () => {
-    onCancerTypesChange(cancerTypes.map((type) => type.tcga_code));
+    const allCodes = displayedCancerTypes.map((t) => t.tcga_code);
+    onCancerTypesChange(allCodes);
   };
 
   const clearSites = () => {
-    setSelectedSites([]);
+    onSitesChange([]);
     setCancerTypes([]);
     onCancerTypesChange([]);
-    onSitesChange([]);
   };
 
   const clearTypes = () => {
     onCancerTypesChange([]);
   };
 
-  const groupedBySite = selectedSites.reduce((acc, siteName) => {
-    const site = cancerSites.find((s) => s.name === siteName);
-    if (!site) return acc;
-    const typesForSite = cancerTypes
-      .filter((type) => type.site_id === site.id && selectedCancerTypes.includes(type.tcga_code))
-      .map((type) => type.tcga_code);
-    if (typesForSite.length > 0) {
-      acc[site.name] = typesForSite;
-    }
-    return acc;
-  }, {} as Record<string, string[]>);
-
-  if (error) return <div>{error}</div>;
+  /* ------------------------------------------------------------------ */
+  /*  RENDER                                                            */
+  /* ------------------------------------------------------------------ */
+  if (error) return <div className="text-red-600">{error}</div>;
 
   return (
     <div className="space-y-6">
-      {/* Cancer Site Selection */}
+      {/* ---------- SITES ---------- */}
       <div>
         <label className="block mb-1 font-semibold">Select Cancer Sites</label>
         <div className="border rounded-md p-4 max-h-64 overflow-y-auto">
           {loadingSites ? (
-            <div>Loading sites...</div>
+            <div className="text-gray-500">Loading sites...</div>
           ) : analysisType === "cancer-specific" ? (
-            <RadioGroup
-              value={selectedSites[0] || ""}
-              onValueChange={handleSiteChange}
-              disabled={loadingSites}
-            >
+            <RadioGroup value={selectedSites[0] || ""} onValueChange={handleSiteChange}>
               {cancerSites.map((site) => (
                 <div key={site.id} className="flex items-center mb-2">
                   <RadioGroupItem value={site.name} id={`site-${site.id}`} />
-                  <label htmlFor={`site-${site.id}`} className="ml-2">{site.name}</label>
+                  <label htmlFor={`site-${site.id}`} className="ml-2">
+                    {site.name}
+                  </label>
                 </div>
               ))}
             </RadioGroup>
@@ -195,13 +244,16 @@ const CancerTypeSelector = ({
                   checked={selectedSites.includes(site.name)}
                   onCheckedChange={() => handleSiteChange(site.name)}
                 />
-                <label htmlFor={`site-${site.id}`} className="ml-2">{site.name}</label>
+                <label htmlFor={`site-${site.id}`} className="ml-2">
+                  {site.name}
+                </label>
               </div>
             ))
           )}
         </div>
+
         {selectedSites.length > 0 && (
-          <Button onClick={clearSites} className="mt-2 mr-2" variant="outline">
+          <Button onClick={clearSites} variant="outline" className="mt-2 mr-2">
             Clear Sites
           </Button>
         )}
@@ -217,17 +269,17 @@ const CancerTypeSelector = ({
         )}
       </div>
 
-      {/* Cancer Type Selection */}
+      {/* ---------- PROJECTS ---------- */}
       {selectedSites.length > 0 && (
         <div>
           <label className="block mb-1 font-semibold">Select Projects</label>
           <div className="border rounded-md p-4 max-h-64 overflow-y-auto">
             {loadingTypes ? (
-              <div>Loading projects...</div>
-            ) : cancerTypes.length === 0 ? (
-              <div>No projects available for selected sites.</div>
+              <div className="text-gray-500">Loading projects...</div>
+            ) : displayedCancerTypes.length === 0 ? (
+              <div className="text-gray-400">No projects available for the selected sites.</div>
             ) : (
-              cancerTypes.map((type) => (
+              displayedCancerTypes.map((type) => (
                 <div key={type.tcga_code} className="flex items-center mb-2">
                   <Checkbox
                     id={`type-${type.tcga_code}`}
@@ -241,16 +293,13 @@ const CancerTypeSelector = ({
               ))
             )}
           </div>
-          {cancerTypes.length > 0 && (
+
+          {displayedCancerTypes.length > 0 && (
             <>
-              <Button onClick={clearTypes} className="mt-2 mr-2" variant="outline">
+              <Button onClick={clearTypes} variant="outline" className="mt-2 mr-2">
                 Clear Projects
               </Button>
-              <Button
-                onClick={handleSelectAllTypes}
-                variant="outline"
-                className="mt-2"
-              >
+              <Button onClick={handleSelectAllTypes} variant="outline" className="mt-2">
                 Select All Projects
               </Button>
             </>
