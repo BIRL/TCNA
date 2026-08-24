@@ -1,3 +1,4 @@
+import { useNavigate } from "react-router-dom";
 import React, { useMemo, useCallback, useReducer, useEffect } from "react";
 import { useSearchParams, Link } from "react-router-dom";
 import { Card, CardContent } from "@/components/ui/card";
@@ -346,6 +347,7 @@ const processData = useCallback(
 
 const GeneResults: React.FC = () => {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const params = useMemo(() => ({
     cancerSites: searchParams.get("sites")?.split(",").filter(Boolean) || [],
     cancerTypes: searchParams.get("cancerTypes")?.split(",").filter(Boolean) || [],
@@ -725,6 +727,13 @@ const handleFilterChange = useCallback(
                       genes={filterState.selectedGenes}
                       selectedSites={filterState.selectedSites}
                     />
+
+                    <Button
+                      onClick={() => navigate("/mutation-analysis")}
+                      style={{ marginTop: "20px", backgroundColor: "#003d82", color: "white", padding: "10px 20px" }}
+                    >
+                      View Somatic Mutation CV (COSMIC) →
+                    </Button>
                     
                   </div>
                 </>

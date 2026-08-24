@@ -1117,6 +1117,73 @@ async def csv_upload(request: Request):
         return JSONResponse({"error": f"Internal server error: {str(e)}"}, status_code=500)
 
 
+
+
+# --- Add this near the other @app.get("/api/...") endpoints in app.py ---
+# Reuses the existing cv_calculation import already at the top of app.py
+
+@app.get("/api/cosmic-genes")
+def get_cosmic_genes():
+    """Returns the list of demo genes available for mutation CV analysis."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT gene_symbol, gene_name, tier, role_in_cancer FROM cosmic_genes ORDER BY gene_symbol"
+            )
+            rows = cur.fetchall()
+        return {"genes": rows}
+    finally:
+        conn.close()
+
+
+@app.get("/api/cosmic-mutation-cv")
+def get_cosmic_mutation_cv(gene: str = Query(..., description="Gene symbol, e.g. TP53")):
+    """
+    Returns per-sample mutation counts and the CV of mutation count
+    for a given gene, computed from real COSMIC data.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT sample_name, mutation_count
+                FROM cosmic_mutation_counts
+                WHERE gene_symbol = %s
+                ORDER BY mutation_count DESC
+                """,
+                (gene.upper(),),
+            )
+            rows = cur.fetchall()
+
+        if not rows:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No COSMIC mutation data found for gene '{gene}'. "
+                       f"Check /api/cosmic-genes for available genes.",
+            )
+
+        df = pd.DataFrame(rows)  # columns: sample_name, mutation_count
+        counts_series = df.set_index("sample_name")["mutation_count"]
+
+        # cv_calculation expects a DataFrame shaped (genes x samples);
+        # here we have one gene's counts across samples, so reshape to a
+        # single-row DataFrame to reuse the exact same function/formula.
+        single_row_df = pd.DataFrame([counts_series.values], columns=counts_series.index)
+        cv_value = float(cv_calculation(single_row_df).iloc[0])
+
+        return {
+            "gene": gene.upper(),
+            "num_samples": len(rows),
+            "mean_mutation_count": float(counts_series.mean()),
+            "std_mutation_count": float(counts_series.std(ddof=1)) if len(rows) > 1 else 0.0,
+            "cv_percent": cv_value,
+            "samples": rows,  # list of {sample_name, mutation_count}
+        }
+    finally:
+        conn.close()
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=5001)

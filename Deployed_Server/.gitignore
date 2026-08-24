@@ -27,6 +27,7 @@ backend/scripts/env
 .env
 backend/data/__pycache__
 backend/scripts/__pycache__
-backend/data/db_conn.py
-
+backend/scripts/db_conn.py
+backend/data/raw/COSMIC/
+__pycache__/
 
